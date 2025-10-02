@@ -380,8 +380,41 @@ def print_batch(batch, tokenizer, args):
     DATA_PRINT_ONCE = False
 
 
+class ProfilerCallback(TrainerCallback):
+    def __init__(self, skip_first, wait, warmup, active, repeat, output_dir):
+        self.skip_first = skip_first
+        self.wait = wait
+        self.warmup = warmup
+        self.active = active
+        self.repeat = repeat
+        self.output_dir = output_dir
+        self.prof = None
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        self.prof = torch.profiler.profile(
+            schedule=torch.profiler.schedule(wait=self.wait, warmup=self.warmup, active=self.active, repeat=self.repeat, skip_first=self.skip_first),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(os.path.join(self.output_dir, "profile_traces")),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=True
+        )
+        self.prof.__enter__()
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if self.prof:
+            self.prof.step()
+
+    def on_train_end(self, args, state, control, **kwargs):
+        if self.prof:
+            self.prof.__exit__(None, None, None)
+
 from transformers import Trainer as HFTrainer
 class Trainer(HFTrainer):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.args.profile:
+            self.add_callback(ProfilerCallback(self.args.profile_skip_first, self.args.profile_wait, self.args.profile_warmup, self.args.profile_active, self.args.profile_repeat, self.args.output_dir))
 
     def get_train_dataloader(self) -> DataLoader:
         """

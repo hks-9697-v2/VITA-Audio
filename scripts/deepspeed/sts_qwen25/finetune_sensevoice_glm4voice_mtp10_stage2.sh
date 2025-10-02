@@ -126,6 +126,13 @@ torchrun $DISTRIBUTED_ARGS tools/finetune_sts_v4_48_3.py \
     --audio-model-freeze \
     --text-audio-interval-ratio 1 10 4 10 \
 
+    #--profile \
+    #--profile_skip_first 0 \
+    #--profile_wait 1 \
+    #--profile_warmup 1 \
+    #--profile_active 3 \
+    #--profile_repeat 1 \
+
     #--language-model-freeze \
     #--dataset_joint false \
     #--variable_length true \

@@ -274,6 +274,13 @@ class TrainingArguments(transformers.TrainingArguments):
 
     mtp_model_lr_mult: float = field(default=1.0, metadata={"help": ""})
 
+    profile: bool = field(default=False, metadata={"help": "Enable pytorch profiler"})
+    profile_skip_first: int = field(default=0, metadata={"help": "Profiler skip_first"})
+    profile_wait: int = field(default=1, metadata={"help": "Profiler wait"})
+    profile_warmup: int = field(default=1, metadata={"help": "Profiler warmup"})
+    profile_active: int = field(default=3, metadata={"help": "Profiler active"})
+    profile_repeat: int = field(default=1, metadata={"help": "Profiler repeat"})
+
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
