@@ -392,11 +392,12 @@ class ProfilerCallback(TrainerCallback):
 
     def on_train_begin(self, args, state, control, **kwargs):
         self.prof = torch.profiler.profile(
+\
             schedule=torch.profiler.schedule(wait=self.wait, warmup=self.warmup, active=self.active, repeat=self.repeat, skip_first=self.skip_first),
             on_trace_ready=torch.profiler.tensorboard_trace_handler(os.path.join(self.output_dir, "profile_traces")),
             record_shapes=True,
-            profile_memory=True,
-            with_stack=True
+            profile_memory=False,
+            with_stack=False
         )
         self.prof.__enter__()
 
