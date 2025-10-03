@@ -281,6 +281,8 @@ class TrainingArguments(transformers.TrainingArguments):
     profile_active: int = field(default=3, metadata={"help": "Profiler active"})
     profile_repeat: int = field(default=1, metadata={"help": "Profiler repeat"})
 
+    use_cuda_graph: bool = field(default=False, metadata={"help": "Enable CUDA graph capture and replay"})
+
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
