@@ -95,9 +95,7 @@ torchrun $DISTRIBUTED_ARGS tools/finetune_sts_v4_48_3.py \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps 1 \
-    --save_strategy "steps" \
-    --save_steps 0.1 \
-    --save_total_limit 2 \
+    --save_strategy "no" \
     --learning_rate 5.00e-5 \
     --max_grad_norm 1.0 \
     --weight_decay 0.1 \
