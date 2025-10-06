@@ -139,6 +139,26 @@ torchrun $DISTRIBUTED_ARGS tools/finetune_sts_v4_48_3.py \
 
     #--bf16 True \
     #--fp16 True \
-    #--tf32 True \
+\
+    #--tf32 True
 
 set +x
+
+echo "Training finished. Copying logs and profiles to GCS..."
+GCS_DEST="/gcs/output/LM/$0/${timestamp}/"
+mkdir -p "${GCS_DEST}"
+
+# Copy the log file
+cp "${LOG}" "${GCS_DEST}"
+
+# Copy the profiles directory
+PROFILE_DIR="${OUTPUT_DIR}/profile_traces"
+if [ -d "${PROFILE_DIR}" ]; then
+    cp -r "${PROFILE_DIR}" "${GCS_DEST}"
+else
+    echo "Profile directory not found at ${PROFILE_DIR}"
+fi
+
+echo "Copy to GCS complete."
+
+
