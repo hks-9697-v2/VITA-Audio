@@ -15,6 +15,12 @@ then
     timestamp=`date +'%Y%m%d_%H'`0000
 fi
 
+logdir="$3"
+if [ -z "$logdir" ]
+then
+    logdir='default'
+fi
+
 ######################################################################
 export ROOT_PATH=/data/
 export CODE_PATH=${ROOT_PATH}/VITA-Audio/
@@ -91,7 +97,7 @@ torchrun $DISTRIBUTED_ARGS tools/finetune_sts_v4_48_3.py \
     --torch_dtype bfloat16 \
     --output_dir $OUTPUT_DIR \
     --num_train_epochs 1 \
-    --max_steps 10 \
+    --max_steps 100 \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps 1 \
@@ -125,8 +131,8 @@ torchrun $DISTRIBUTED_ARGS tools/finetune_sts_v4_48_3.py \
     --profile \
     --profile_skip_first 0 \
     --profile_wait 1 \
-    --profile_warmup 1 \
-    --profile_active 3 \
+    --profile_warmup 3 \
+    --profile_active 1 \
     --profile_repeat 1 \
 
 
@@ -143,7 +149,7 @@ torchrun $DISTRIBUTED_ARGS tools/finetune_sts_v4_48_3.py \
 set +x
 
 echo "Training finished. Copying logs and profiles to GCS..."
-GCS_DEST="/gcs/output/LM/$0/${timestamp}/"
+GCS_DEST="/gcs/tencent_repro/${logdir}/${timestamp}/"
 mkdir -p "${GCS_DEST}"
 
 # Copy the log file
