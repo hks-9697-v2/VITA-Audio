@@ -47,6 +47,12 @@
     "train_batch_size": "auto",
     "train_micro_batch_size_per_gpu": "auto",
     "wall_clock_breakdown": true,
-    "dump_state": false
+    "dump_state": false,
+
+    "csv_monitor": {
+        "enabled": true,
+        "output_path": "ds_logs/",
+        "job_name": "wall_clock_breakdown"
+    }
 
 }

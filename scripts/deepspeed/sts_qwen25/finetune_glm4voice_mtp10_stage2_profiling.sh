@@ -163,6 +163,14 @@ else
     echo "Profile directory not found at ${PROFILE_DIR}"
 fi
 
+# Copy the DeepSpeed monitor logs directory
+DS_LOGS_DIR="${OUTPUT_DIR}/ds_logs"
+if [ -d "${DS_LOGS_DIR}" ]; then
+    cp -r "${DS_LOGS_DIR}" "${GCS_DEST}"
+else
+    echo "DeepSpeed logs directory not found at ${DS_LOGS_DIR}"
+fi
+
 echo "Copy to GCS complete."
 
 
