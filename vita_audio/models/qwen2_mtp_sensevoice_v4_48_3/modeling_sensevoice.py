@@ -413,7 +413,8 @@ class EncoderLayerSANM(nn.Module):
         # `x <- x + 1 / (1 - p) * f(x)` at training time.
         stoch_layer_coeff = 1.0
         if self.training and self.stochastic_depth_rate > 0:
-            skip_layer = torch.rand(1).item() < self.stochastic_depth_rate
+            if torch.rand(1, device=x.device) < self.stochastic_depth_rate:
+                 skip_layer = True
             stoch_layer_coeff = 1.0 / (1 - self.stochastic_depth_rate)
 
         if skip_layer:
@@ -1017,35 +1018,6 @@ class SenseVoiceSmall(nn.Module):
         if speech_lengths is None:
             speech_lengths = speech.shape[1]
 
-        speech = speech.to(device=kwargs["device"])
-        speech_lengths = speech_lengths.to(device=kwargs["device"])
-
-        language = kwargs.get("language", "auto")
-        language_query = self.embed(
-            torch.LongTensor(
-                [[self.lid_dict[language] if language in self.lid_dict else 0]]
-            ).to(speech.device)
-        ).repeat(speech.size(0), 1, 1)
-        
-        use_itn = kwargs.get("use_itn", False)
-        output_timestamp = kwargs.get("output_timestamp", False)
-
-        textnorm = kwargs.get("text_norm", None)
-        if textnorm is None:
-            textnorm = "withitn" if use_itn else "woitn"
-        textnorm_query = self.embed(
-            torch.LongTensor([[self.textnorm_dict[textnorm]]]).to(speech.device)
-        ).repeat(speech.size(0), 1, 1)
-        speech = torch.cat((textnorm_query, speech), dim=1)
-        speech_lengths += 1
-
-        event_emo_query = self.embed(torch.LongTensor([[1, 2]]).to(speech.device)).repeat(
-            speech.size(0), 1, 1
-        )
-        input_query = torch.cat((language_query, event_emo_query), dim=1)
-        speech = torch.cat((input_query, speech), dim=1)
-        speech_lengths += 3
-
         # Encoder
         encoder_out, encoder_out_lens = self.encoder(speech, speech_lengths)
         if isinstance(encoder_out, tuple):
@@ -1084,6 +1056,7 @@ class AudioEncoder(nn.Module):
         self.model, self.kwargs = self.build_model(model=model_dir, trust_remote_code=False,)
 
     
+
     def forward(
         self,
         audios,
@@ -1091,29 +1064,46 @@ class AudioEncoder(nn.Module):
 
         from torch.nn.utils.rnn import pad_sequence
         feats_pad = pad_sequence(audios, batch_first=True, padding_value=0.0)
-        # feats_lens = torch.as_tensor([len(x) + 4 for x in audios])
         feats_lens = torch.as_tensor([len(x) for x in audios])
 
-        feats_pad = feats_pad.to(torch.bfloat16)
+        device = self.kwargs["device"]
+        feats_pad = feats_pad.to(device=device, dtype=torch.bfloat16)
+        feats_lens = feats_lens.to(device=device)
+
+        # Prepare query tensors on the correct device
+        language = self.kwargs.get("language", "auto")
+        language_query = self.model.embed(
+            torch.LongTensor(
+                [[self.model.lid_dict[language] if language in self.model.lid_dict else 0]]
+            ).to(device)
+        ).repeat(feats_pad.size(0), 1, 1)
+
+        use_itn = self.kwargs.get("use_itn", False)
+        textnorm = self.kwargs.get("text_norm", None)
+        if textnorm is None:
+            textnorm = "withitn" if use_itn else "woitn"
+        textnorm_query = self.model.embed(
+            torch.LongTensor([[self.model.textnorm_dict[textnorm]]]).to(device)
+        ).repeat(feats_pad.size(0), 1, 1)
+
+        event_emo_query = self.model.embed(torch.LongTensor([[1, 2]]).to(device)).repeat(
+            feats_pad.size(0), 1, 1
+        )
+
+        # Concatenate queries and features
+        speech = torch.cat((textnorm_query, feats_pad), dim=1)
+        feats_lens += 1
+        input_query = torch.cat((language_query, event_emo_query), dim=1)
+        speech = torch.cat((input_query, speech), dim=1)
+        feats_lens += 3
 
         encoder_out, encoder_out_lens = self.model.inference_encode(
-            feats_pad,
+            speech,
             data_lengths=feats_lens,
-            language="auto", # "zh", "en", "yue", "ja", "ko", "nospeech"
-            use_itn=False,
-            ban_emo_unk=False,
             **self.kwargs,
         )
 
         return encoder_out, encoder_out_lens
-
-        audio_embeds = []
-        for x, y in zip(encoder_out, encoder_out_lens):
-            audio_embeds.append(x[:y, ...])
-
-        audio_embeds = torch.stack(audio_embeds, dim=0)
-
-        return audio_embeds
 
     # https://github.com/modelscope/FunASR/blob/main/funasr/auto/auto_model.py
     @staticmethod
