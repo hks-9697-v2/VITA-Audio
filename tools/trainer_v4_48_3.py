@@ -54,6 +54,7 @@ from huggingface_hub import ModelCard, create_repo, upload_folder
 from packaging import version
 from torch import nn
 from torch.utils.data import DataLoader, Dataset, IterableDataset, RandomSampler, SequentialSampler
+from torch.nn.utils.rnn import pad_sequence
 
 from transformers import __version__
 from transformers.configuration_utils import PretrainedConfig
@@ -413,6 +414,50 @@ class ProfilerCallback(TrainerCallback):
             self.prof.__exit__(None, None, None)
 
 from transformers import Trainer as HFTrainer
+
+def prepare_audio_inputs(model, inputs, device, dtype):
+    audio_model = model.model.audio_model
+    audios = inputs.get("audios")
+
+    if audios is None: # Create fake audios if not provided
+        audios = [torch.ones((1, 560), dtype=dtype, device=device)]
+
+    # This is the logic moved from AudioEncoder.forward
+    feats_pad = pad_sequence(audios, batch_first=True, padding_value=0.0)
+    feats_lens = torch.as_tensor([len(x) for x in audios], device=device)
+    feats_pad = feats_pad.to(device=device, dtype=torch.bfloat16)
+
+    language = audio_model.kwargs.get("language", "auto")
+    language_query = audio_model.model.embed(
+        torch.LongTensor(
+            [[audio_model.model.lid_dict[language] if language in audio_model.model.lid_dict else 0]]
+        ).to(device)
+    ).repeat(feats_pad.size(0), 1, 1)
+
+    use_itn = audio_model.kwargs.get("use_itn", False)
+    textnorm = audio_model.kwargs.get("text_norm", None)
+    if textnorm is None:
+        textnorm = "withitn" if use_itn else "woitn"
+    textnorm_query = audio_model.model.embed(
+        torch.LongTensor([[audio_model.model.textnorm_dict[textnorm]]]).to(device)
+    ).repeat(feats_pad.size(0), 1, 1)
+
+    event_emo_query = audio_model.model.embed(torch.LongTensor([[1, 2]]).to(device)).repeat(
+        feats_pad.size(0), 1, 1
+    )
+
+    speech = torch.cat((textnorm_query, feats_pad), dim=1)
+    speech_lengths = feats_lens + 1
+    input_query = torch.cat((language_query, event_emo_query), dim=1)
+    speech = torch.cat((input_query, speech), dim=1)
+    speech_lengths += 3
+
+    inputs["prepared_speech"] = speech
+    inputs["prepared_speech_lengths"] = speech_lengths
+    if "audios" in inputs:
+        del inputs["audios"] # Remove original audios
+    return inputs
+
 class Trainer(HFTrainer):
 
     def __init__(self, *args, **kwargs):
@@ -616,518 +661,6 @@ class Trainer(HFTrainer):
 
         return self.optimizer
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     def training_step(
         self, model: nn.Module, inputs: dict[str, Union[torch.Tensor, Any]], num_items_in_batch=None
     ) -> torch.Tensor:
@@ -1156,6 +689,12 @@ class Trainer(HFTrainer):
             self.optimizer.train()
 
         inputs = self._prepare_inputs(inputs)
+
+        # ===== BEGIN AUDIO PREPROCESSING =====
+        device = self.args.device
+        dtype = model.model.embed_tokens.weight.dtype # Get dtype from model
+        inputs = prepare_audio_inputs(model, inputs, device, dtype)
+        # ===== END AUDIO PREPROCESSING =====
 
         if self.args.use_cuda_graph:
             if self.cuda_graph is None:
