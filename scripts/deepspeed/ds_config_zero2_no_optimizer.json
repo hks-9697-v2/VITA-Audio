@@ -43,10 +43,10 @@
 
     "gradient_accumulation_steps": "auto",
     "gradient_clipping": "auto",
-    "steps_per_print": 100,
+    "steps_per_print": 1,
     "train_batch_size": "auto",
     "train_micro_batch_size_per_gpu": "auto",
-    "wall_clock_breakdown": false,
+    "wall_clock_breakdown": true,
     "dump_state": false
 
 }
