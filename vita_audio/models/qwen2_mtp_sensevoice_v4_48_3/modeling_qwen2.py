@@ -546,12 +546,12 @@ class Qwen2Model(Qwen2PreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
-
+    @add_start_docstrings_to_model_forward(QWEN2_INPUTS_DOCSTRING)
     def forward(
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
-        # audios: Optional[torch.FloatTensor] = None, # Removed
+        audios: Optional[torch.FloatTensor] = None,
         audio_indices: Optional[torch.LongTensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[Cache] = None,
@@ -562,13 +562,17 @@ class Qwen2Model(Qwen2PreTrainedModel):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         layer_idxs = None,
-        prepared_speech: Optional[torch.Tensor] = None, # Added
-        prepared_speech_lengths: Optional[torch.Tensor] = None, # Added
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> Union[Tuple, BaseModelOutputWithPast]:
+
+        # ... (at the beginning of the forward method)
+        prepared_speech = inputs.get("prepared_speech")
+        prepared_speech_lengths = inputs.get("prepared_speech_lengths")
+
         if prepared_speech is not None:
             audio_embeds, audio_lengths = self.audio_model(prepared_speech, prepared_speech_lengths)
-            # assert audio_embeds.shape[0] == len(audio_indices) # This check might need adjustment
+            if "audio_indices" in inputs: # If real audios were present
+                 assert audio_embeds.shape[0] == len(inputs["audio_indices"])
             audio_embeds = self.audio_projection(audio_embeds)
         else:
             audio_embeds = None
@@ -593,10 +597,11 @@ class Qwen2Model(Qwen2PreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         if audio_embeds is not None:
-            if audio_indices is not None: # Real audios
+            if inputs.get("audio_indices") is not None: # Real audios
                 inputs_embeds = inputs_embeds.clone()
-                for audio_embeds_, audio_lengths_, audio_indices_ in zip(audio_embeds, audio_lengths, audio_indices):
+                for audio_embeds_, audio_lengths_, audio_indices_ in zip(audio_embeds, audio_lengths, inputs["audio_indices"]):
                     audio_embeds_ = audio_embeds_[:audio_lengths_, ...]
+                    # audio_embeds_ = audio_embeds_.to(inputs_embeds.device) # Already on device
                     indices_b, indices_s = audio_indices_.to(inputs_embeds.device).unbind(dim=0)
                     inputs_embeds[indices_b.view(-1), indices_s.view(-1)] = audio_embeds_.view(-1, audio_embeds_.shape[-1])
             else: # Fake audios
@@ -924,357 +929,354 @@ class Qwen2MTPSenseVoiceForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
 
     @add_start_docstrings_to_model_forward(QWEN2_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
-        def forward(
-            self,
-            input_ids: torch.LongTensor = None,
-            attention_mask: Optional[torch.Tensor] = None,
-            # audios: Optional[torch.FloatTensor] = None, # Removed
-            audio_indices: Optional[torch.LongTensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
-            inputs_embeds: Optional[torch.FloatTensor] = None,
-            labels: Optional[torch.LongTensor] = None,
-            use_cache: Optional[bool] = None,
-            output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
-            cache_position: Optional[torch.LongTensor] = None,
-            num_logits_to_keep: int = 0,
-            prepared_speech: Optional[torch.Tensor] = None, # Added
-            prepared_speech_lengths: Optional[torch.Tensor] = None, # Added
-            **kwargs: Unpack[KwargsForCausalLM],
-        ) -> Union[Tuple, CausalLMOutputWithPast]:
-            r"""
-            Args:
-                labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-                    Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
-                    config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
-                    (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
-    
-                num_logits_to_keep (`int`, *optional*):
-                    Calculate logits for the last `num_logits_to_keep` tokens. If `0`, calculate logits for all
-                    `input_ids` (special case). Only last token logits are needed for generation, and calculating them only for that
-                    token can save memory, which becomes pretty significant for long sequences or large vocabulary size.
-    
-            Returns:
-    
-            Example:
-    
-            ```python
-            >>> from transformers import AutoTokenizer, Qwen2ForCausalLM
-    
-            >>> model = Qwen2ForCausalLM.from_pretrained("meta-qwen2/Qwen2-2-7b-hf")
-            >>> tokenizer = AutoTokenizer.from_pretrained("meta-qwen2/Qwen2-2-7b-hf")
-    
-            >>> prompt = "Hey, are you conscious? Can you talk to me?"
-            >>> inputs = tokenizer(prompt, return_tensors="pt")
-    
-            >>> # Generate
-            >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-            >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-            "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
-            ```"""
-            output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-            output_hidden_states = (
-                output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-            )
-            return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-    
-            # ===============================================================================================
-            if not self.training:
-                if input_ids is not None:
-                    num_input_tokens = input_ids.size(1)
-                if inputs_embeds is not None:
-                    num_input_tokens = inputs_embeds.size(1)
-    
-                if use_cache:
-                    if self.input_ids is None and self.inputs_embeds is None:
-                        if input_ids is not None:
-                            self.input_ids = input_ids
-                        if inputs_embeds is not None:
-                            self.inputs_embeds = inputs_embeds
-                        if position_ids is not None:
-                            self.position_ids = position_ids
-    
-                    else:
-                        if input_ids is not None:
-                            self.input_ids = torch.cat([self.input_ids, input_ids], dim=1)
-                        if inputs_embeds is not None:
-                            self.inputs_embeds = torch.cat([self.inputs_embeds, inputs_embeds], dim=1)
-                        if position_ids is not None:
-                            self.position_ids = torch.cat([self.position_ids, position_ids], dim=1)
-    
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        audios: Optional[torch.FloatTensor] = None,
+        audio_indices: Optional[torch.LongTensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        num_logits_to_keep: int = 0,
+        **kwargs: Unpack[KwargsForCausalLM],
+    ) -> Union[Tuple, CausalLMOutputWithPast]:
+        r"""
+        Args:
+            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
+                config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+                (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+
+            num_logits_to_keep (`int`, *optional*):
+                Calculate logits for the last `num_logits_to_keep` tokens. If `0`, calculate logits for all
+                `input_ids` (special case). Only last token logits are needed for generation, and calculating them only for that
+                token can save memory, which becomes pretty significant for long sequences or large vocabulary size.
+
+        Returns:
+
+        Example:
+
+        ```python
+        >>> from transformers import AutoTokenizer, Qwen2ForCausalLM
+
+        >>> model = Qwen2ForCausalLM.from_pretrained("meta-qwen2/Qwen2-2-7b-hf")
+        >>> tokenizer = AutoTokenizer.from_pretrained("meta-qwen2/Qwen2-2-7b-hf")
+
+        >>> prompt = "Hey, are you conscious? Can you talk to me?"
+        >>> inputs = tokenizer(prompt, return_tensors="pt")
+
+        >>> # Generate
+        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
+        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
+        ```"""
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        # ===============================================================================================
+        if not self.training:
+            if input_ids is not None:
+                num_input_tokens = input_ids.size(1)
+            if inputs_embeds is not None:
+                num_input_tokens = inputs_embeds.size(1)
+
+            if use_cache:
+                if self.input_ids is None and self.inputs_embeds is None:
+                    if input_ids is not None:
+                        self.input_ids = input_ids
+                    if inputs_embeds is not None:
+                        self.inputs_embeds = inputs_embeds
+                    if position_ids is not None:
+                        self.position_ids = position_ids
+
                 else:
-                    self.input_ids = input_ids
-                    self.inputs_embeds = inputs_embeds
-                    self.position_ids = position_ids
-    
-                self.attention_mask = attention_mask
-    
-                if self.num_prefill_tokens < 0:
-                    self.num_prefill_tokens = self.input_ids.size(1)
-                num_decode_tokens = self.input_ids.size(1) - self.num_prefill_tokens
-    
-                if self.mtp_inference_mode[num_decode_tokens] == "M":
-                    self.mtp_idx = -1
-                elif self.mtp_inference_mode[num_decode_tokens] == "m":
-                    if self.mtp_inference_mode[num_decode_tokens - 1] == "M":
-                        self.mtp_idx = 0
-                    else:
-                        pass
-    
-                # if True:
-                if False:
-                    print("=" * 100)
-                    print(f"{self.mtp_idx=}")
-                    print(f"{self.num_prefill_tokens=}")
-                    print(f"{num_decode_tokens=}")
-                    print(f"{self.mtp_inference_mode=}")
-                    if self.input_ids is not None:
-                        print(f"{self.input_ids.size()=}")
-                    if self.inputs_embeds is not None:
-                        print(f"{self.inputs_embeds.size()=}")
-                    if self.hidden_states[self.mtp_idx] is not None:
-                        print(f"{self.hidden_states[self.mtp_idx].size()=}")
-    
-    
-                if self.mtp_idx > -1 and self.mtp_idx < self.config.num_nextn_predict_layers and num_input_tokens == 1:
-                    layer_idx = self.config.num_hidden_layers - self.config.num_nextn_predict_layers + self.mtp_idx
-    
-                    if use_cache:
-                        if len(past_key_values.key_cache) > layer_idx:
-                            num_seen_tokens = past_key_values.key_cache[layer_idx].size(2)
-                        else:
-                            num_seen_tokens = 0
-                    else:
-                        num_seen_tokens = 0
-    
-                    hidden_states = self.hidden_states[self.mtp_idx][:, num_seen_tokens:, :]
-    
-                    if self.input_ids is not None:
-                        input_ids = self.input_ids[:, num_seen_tokens + self.mtp_idx +  1:]
-                    if self.inputs_embeds is not None:
-                        inputs_embeds = self.inputs_embeds[:, num_seen_tokens + self.mtp_idx + 1:, :]
-                    if self.position_ids is not None:
-                        position_ids = self.position_ids[:, num_seen_tokens + self.mtp_idx + 1:]
-                    attention_mask = self.attention_mask[:, num_seen_tokens + self.mtp_idx + 1:]
-    
-                    if False:
-                    # if True:
-                        print("=" * 100)
-                        print(f"{self.mtp_idx=}")
-                        print(f"{layer_idx=}")
-                        if input_ids is not None:
-                            print(f"{input_ids.size()=} {input_ids=}")
-                        if inputs_embeds is not None:
-                            print(f"{inputs_embeds.size()=} {inputs_embeds=}")
-                        print(f"{hidden_states.size()=} {hidden_states=}")
-                        if attention_mask is not None:
-                            print(f"{attention_mask.size()=} {attention_mask=}")
-                        if position_ids is not None:
-                            print(f"{position_ids.size()=} {position_ids=}")
-                        if use_cache and len(past_key_values.key_cache) > layer_idx:
-                            print(f"{past_key_values.key_cache[layer_idx].size()=}")
-                        print(f"{use_cache=}")
-                        print(f"{num_logits_to_keep=}")
-                        print(f"{output_attentions=}")
-                        print(f"{output_hidden_states=}")
-                        print(f"{cache_position=}")
-    
-                    mtp_outputs, logits, _ = self.mtp_forward(
-                        self.mtp_idx,
-                        input_ids=input_ids,
-                        hidden_states=hidden_states,
-                        attention_mask=attention_mask,
-                        position_ids=position_ids,
-                        past_key_values=past_key_values,
-                        inputs_embeds=inputs_embeds,
-                        labels=None,
-                        kl_labels=None,
-                        use_cache=use_cache,
-                        output_attentions=output_attentions,
-                        output_hidden_states=output_hidden_states,
-                        return_dict=return_dict,
-                        cache_position=cache_position,
-                        num_logits_to_keep=num_logits_to_keep,
-                        **kwargs,
-                    )
-                    hidden_states = mtp_outputs.last_hidden_state
-    
-                    self.mtp_idx += 1
-                    if use_cache:
-                        if self.hidden_states[self.mtp_idx] is None:
-                            self.hidden_states[self.mtp_idx] = hidden_states
-                        else:
-                            self.hidden_states[self.mtp_idx] = torch.cat([self.hidden_states[self.mtp_idx], hidden_states], dim=1)
-    
-                    else:
-                        self.hidden_states[self.mtp_idx] = hidden_states
-    
-                    return CausalLMOutputWithPast(
-                        loss=None,
-                        logits=logits,
-                        past_key_values=past_key_values,
-                        hidden_states=mtp_outputs.hidden_states,
-                        attentions=mtp_outputs.attentions,
-                    )
-    
-                if use_cache and past_key_values is not None:
-                    if len(past_key_values.key_cache) > 0:
-                        # print(f"{past_key_values.key_cache[0].size()=}")
-                        num_seen_tokens = past_key_values.key_cache[0].size(2)
+                    if input_ids is not None:
+                        self.input_ids = torch.cat([self.input_ids, input_ids], dim=1)
+                    if inputs_embeds is not None:
+                        self.inputs_embeds = torch.cat([self.inputs_embeds, inputs_embeds], dim=1)
+                    if position_ids is not None:
+                        self.position_ids = torch.cat([self.position_ids, position_ids], dim=1)
+
+            else:
+                self.input_ids = input_ids
+                self.inputs_embeds = inputs_embeds
+                self.position_ids = position_ids
+
+            self.attention_mask = attention_mask
+
+            if self.num_prefill_tokens < 0:
+                self.num_prefill_tokens = self.input_ids.size(1)
+            num_decode_tokens = self.input_ids.size(1) - self.num_prefill_tokens
+
+            if self.mtp_inference_mode[num_decode_tokens] == "M":
+                self.mtp_idx = -1
+            elif self.mtp_inference_mode[num_decode_tokens] == "m":
+                if self.mtp_inference_mode[num_decode_tokens - 1] == "M":
+                    self.mtp_idx = 0
+                else:
+                    pass
+
+            # if True:
+            if False:
+                print("=" * 100)
+                print(f"{self.mtp_idx=}")
+                print(f"{self.num_prefill_tokens=}")
+                print(f"{num_decode_tokens=}")
+                print(f"{self.mtp_inference_mode=}")
+                if self.input_ids is not None:
+                    print(f"{self.input_ids.size()=}")
+                if self.inputs_embeds is not None:
+                    print(f"{self.inputs_embeds.size()=}")
+                if self.hidden_states[self.mtp_idx] is not None:
+                    print(f"{self.hidden_states[self.mtp_idx].size()=}")
+
+
+            if self.mtp_idx > -1 and self.mtp_idx < self.config.num_nextn_predict_layers and num_input_tokens == 1:
+                layer_idx = self.config.num_hidden_layers - self.config.num_nextn_predict_layers + self.mtp_idx
+
+                if use_cache:
+                    if len(past_key_values.key_cache) > layer_idx:
+                        num_seen_tokens = past_key_values.key_cache[layer_idx].size(2)
                     else:
                         num_seen_tokens = 0
                 else:
                     num_seen_tokens = 0
-    
+
+                hidden_states = self.hidden_states[self.mtp_idx][:, num_seen_tokens:, :]
+
                 if self.input_ids is not None:
-                    input_ids = self.input_ids[:, num_seen_tokens:]
+                    input_ids = self.input_ids[:, num_seen_tokens + self.mtp_idx +  1:]
                 if self.inputs_embeds is not None:
-                    inputs_embeds = self.inputs_embeds[:, num_seen_tokens:, :]
+                    inputs_embeds = self.inputs_embeds[:, num_seen_tokens + self.mtp_idx + 1:, :]
                 if self.position_ids is not None:
-                    position_ids = self.position_ids[:, num_seen_tokens:]
-                attention_mask = attention_mask
-    
-            # ===============================================================================================
-            # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-            outputs = self.model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                # audios=audios, # Removed
-                audio_indices=audio_indices,
-                position_ids=position_ids,
-                past_key_values=past_key_values,
-                inputs_embeds=inputs_embeds,
-                use_cache=use_cache,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                return_dict=return_dict,
-                cache_position=cache_position,
-                layer_idxs=list(range(self.config.num_hidden_layers - self.config.num_nextn_predict_layers)),
-                prepared_speech=prepared_speech, # Added
-                prepared_speech_lengths=prepared_speech_lengths, # Added
-                **kwargs,
-            )
-    
-            hidden_states = outputs[0]
-            # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
-            logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :])
-    
-            loss = None
-            if labels is not None:
-                loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
-                # loss = ForCausalLMLoss(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
-                # if self.training and torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
-                #     with torch.no_grad():
-                #         logger.info(f"STP {loss=}")
-    
-            # ===============================================================================================
-            if labels is not None and self.config.num_nextn_predict_layers > 0:
-    
-                if self.lm_head.weight.requires_grad and False:
-                    if inputs_embeds is None:
-                        inputs_embeds = self.model.embed_tokens(input_ids)
-    
-                    inputs_embeds = inputs_embeds
-                    hidden_states = hidden_states
-                    kl_labels = logits
-    
-                else:
-                    with torch.no_grad():
-                        if inputs_embeds is None:
-                            inputs_embeds = self.model.embed_tokens(input_ids)
-    
-                        inputs_embeds = inputs_embeds.detach()
-                        hidden_states = hidden_states.detach()
-                        kl_labels = logits.detach()
-    
-                if self.lm_head.weight.requires_grad:
-                    pass
-                else:
-                    loss = 0.0
-    
-                for mtp_idx in range(self.config.num_nextn_predict_layers):
-    
-                    # SFT with data packing
-                    if True:
-                        mtp_mask = position_ids > mtp_idx
-                        # input_ids = input_ids[mtp_mask].unsqueeze(0)
-                        inputs_embeds = inputs_embeds[mtp_mask].unsqueeze(0)
-                        if attention_mask is not None:
-                            attention_mask = attention_mask[mtp_mask].unsqueeze(0)
-                        if position_ids is not None:
-                            position_ids = position_ids[mtp_mask].unsqueeze(0)
-                        labels = labels[mtp_mask].unsqueeze(0)
-                        kl_labels = kl_labels[mtp_mask].unsqueeze(0)
-    
-                        mtp_mask = torch.cat((mtp_mask[:, 1:], mtp_mask[:, :1]), dim=1)
-                        hidden_states = hidden_states[mtp_mask].unsqueeze(0)
-    
-                        cu_seq_lens_q, cu_seq_lens_k, max_length_q, max_length_k = prepare_fa2_from_position_ids_for_mtp(position_ids, mtp_idx)
-                        # kwargs["cu_seq_lens_q"] = cu_seq_lens_q
-                        # kwargs["cu_seq_lens_k"] = cu_seq_lens_k
-                        # kwargs["max_length_q"] = max_length_q
-                        # kwargs["max_length_k"] = max_length_k
-    
-                        # print(f"{cu_seq_lens_q}")
-                        # print(f"{cu_seq_lens_k}")
-                        # print(f"{max_length_q}")
-                        # print(f"{max_length_k}")
-    
-                    mtp_outputs, _, mtp_loss = self.mtp_forward(
-                        mtp_idx,
-                        input_ids=None,
-                        hidden_states=hidden_states,
-                        attention_mask=attention_mask,
-                        position_ids=position_ids,
-                        past_key_values=past_key_values,
-                        inputs_embeds=inputs_embeds,
-                        labels=labels,
-                        kl_labels=kl_labels,
-                        use_cache=use_cache,
-                        output_attentions=output_attentions,
-                        output_hidden_states=output_hidden_states,
-                        return_dict=return_dict,
-                        cache_position=cache_position,
-                        num_logits_to_keep=num_logits_to_keep,
-                        cu_seq_lens_q=cu_seq_lens_q,
-                        cu_seq_lens_k=cu_seq_lens_k,
-                        max_length_q=max_length_q,
-                        max_length_k=max_length_k,
-                        **kwargs,
-                    )
-    
-                    loss += sum(mtp_loss) / self.config.num_nextn_predict_layers * self.config.mtp_loss_weight
-    
-                    hidden_states = mtp_outputs.last_hidden_state
-    
-            if not self.training:
-                self.mtp_idx = 0
-    
+                    position_ids = self.position_ids[:, num_seen_tokens + self.mtp_idx + 1:]
+                attention_mask = self.attention_mask[:, num_seen_tokens + self.mtp_idx + 1:]
+
+                if False:
+                # if True:
+                    print("=" * 100)
+                    print(f"{self.mtp_idx=}")
+                    print(f"{layer_idx=}")
+                    if input_ids is not None:
+                        print(f"{input_ids.size()=} {input_ids=}")
+                    if inputs_embeds is not None:
+                        print(f"{inputs_embeds.size()=} {inputs_embeds=}")
+                    print(f"{hidden_states.size()=} {hidden_states=}")
+                    if attention_mask is not None:
+                        print(f"{attention_mask.size()=} {attention_mask=}")
+                    if position_ids is not None:
+                        print(f"{position_ids.size()=} {position_ids=}")
+                    if use_cache and len(past_key_values.key_cache) > layer_idx:
+                        print(f"{past_key_values.key_cache[layer_idx].size()=}")
+                    print(f"{use_cache=}")
+                    print(f"{num_logits_to_keep=}")
+                    print(f"{output_attentions=}")
+                    print(f"{output_hidden_states=}")
+                    print(f"{cache_position=}")
+
+                mtp_outputs, logits, _ = self.mtp_forward(
+                    self.mtp_idx,
+                    input_ids=input_ids,
+                    hidden_states=hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    inputs_embeds=inputs_embeds,
+                    labels=None,
+                    kl_labels=None,
+                    use_cache=use_cache,
+                    output_attentions=output_attentions,
+                    output_hidden_states=output_hidden_states,
+                    return_dict=return_dict,
+                    cache_position=cache_position,
+                    num_logits_to_keep=num_logits_to_keep,
+                    **kwargs,
+                )
+                hidden_states = mtp_outputs.last_hidden_state
+
+                self.mtp_idx += 1
                 if use_cache:
                     if self.hidden_states[self.mtp_idx] is None:
                         self.hidden_states[self.mtp_idx] = hidden_states
-    
                     else:
                         self.hidden_states[self.mtp_idx] = torch.cat([self.hidden_states[self.mtp_idx], hidden_states], dim=1)
-    
+
                 else:
                     self.hidden_states[self.mtp_idx] = hidden_states
-    
-            # ===============================================================================================
-    
-            if not return_dict:
-                output = (logits,) + outputs[1:]
-                return (loss,) + output if loss is not None else output
-    
-            return CausalLMOutputWithPast(
-                loss=loss,
-                logits=logits,
-                past_key_values=outputs.past_key_values,
-                hidden_states=outputs.hidden_states,
-                attentions=outputs.attentions,
-            )
+
+                return CausalLMOutputWithPast(
+                    loss=None,
+                    logits=logits,
+                    past_key_values=past_key_values,
+                    hidden_states=mtp_outputs.hidden_states,
+                    attentions=mtp_outputs.attentions,
+                )
+
+            if use_cache and past_key_values is not None:
+                if len(past_key_values.key_cache) > 0:
+                    # print(f"{past_key_values.key_cache[0].size()=}")
+                    num_seen_tokens = past_key_values.key_cache[0].size(2)
+                else:
+                    num_seen_tokens = 0
+            else:
+                num_seen_tokens = 0
+
+            if self.input_ids is not None:
+                input_ids = self.input_ids[:, num_seen_tokens:]
+            if self.inputs_embeds is not None:
+                inputs_embeds = self.inputs_embeds[:, num_seen_tokens:, :]
+            if self.position_ids is not None:
+                position_ids = self.position_ids[:, num_seen_tokens:]
+            attention_mask = attention_mask
+
+        # ===============================================================================================
+        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            audios=audios,
+            audio_indices=audio_indices,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+            cache_position=cache_position,
+            layer_idxs=list(range(self.config.num_hidden_layers - self.config.num_nextn_predict_layers)),
+            **kwargs,
+        )
+
+        hidden_states = outputs[0]
+        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
+        logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :])
+
+        loss = None
+        if labels is not None:
+            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
+            # loss = ForCausalLMLoss(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
+            # if self.training and torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
+            #     with torch.no_grad():
+            #         logger.info(f"STP {loss=}")
+
+        # ===============================================================================================
+        if labels is not None and self.config.num_nextn_predict_layers > 0:
+
+            if self.lm_head.weight.requires_grad and False:
+                if inputs_embeds is None:
+                    inputs_embeds = self.model.embed_tokens(input_ids)
+
+                inputs_embeds = inputs_embeds
+                hidden_states = hidden_states
+                kl_labels = logits
+
+            else:
+                with torch.no_grad():
+                    if inputs_embeds is None:
+                        inputs_embeds = self.model.embed_tokens(input_ids)
+
+                    inputs_embeds = inputs_embeds.detach()
+                    hidden_states = hidden_states.detach()
+                    kl_labels = logits.detach()
+
+            if self.lm_head.weight.requires_grad:
+                pass
+            else:
+                loss = 0.0
+
+            for mtp_idx in range(self.config.num_nextn_predict_layers):
+
+                # SFT with data packing
+                if True:
+                    mtp_mask = position_ids > mtp_idx
+                    # input_ids = input_ids[mtp_mask].unsqueeze(0)
+                    inputs_embeds = inputs_embeds[mtp_mask].unsqueeze(0)
+                    if attention_mask is not None:
+                        attention_mask = attention_mask[mtp_mask].unsqueeze(0)
+                    if position_ids is not None:
+                        position_ids = position_ids[mtp_mask].unsqueeze(0)
+                    labels = labels[mtp_mask].unsqueeze(0)
+                    kl_labels = kl_labels[mtp_mask].unsqueeze(0)
+
+                    mtp_mask = torch.cat((mtp_mask[:, 1:], mtp_mask[:, :1]), dim=1)
+                    hidden_states = hidden_states[mtp_mask].unsqueeze(0)
+
+                    cu_seq_lens_q, cu_seq_lens_k, max_length_q, max_length_k = prepare_fa2_from_position_ids_for_mtp(position_ids, mtp_idx)
+                    # kwargs["cu_seq_lens_q"] = cu_seq_lens_q
+                    # kwargs["cu_seq_lens_k"] = cu_seq_lens_k
+                    # kwargs["max_length_q"] = max_length_q
+                    # kwargs["max_length_k"] = max_length_k
+
+                    # print(f"{cu_seq_lens_q}")
+                    # print(f"{cu_seq_lens_k}")
+                    # print(f"{max_length_q}")
+                    # print(f"{max_length_k}")
+
+                mtp_outputs, _, mtp_loss = self.mtp_forward(
+                    mtp_idx,
+                    input_ids=None,
+                    hidden_states=hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    inputs_embeds=inputs_embeds,
+                    labels=labels,
+                    kl_labels=kl_labels,
+                    use_cache=use_cache,
+                    output_attentions=output_attentions,
+                    output_hidden_states=output_hidden_states,
+                    return_dict=return_dict,
+                    cache_position=cache_position,
+                    num_logits_to_keep=num_logits_to_keep,
+                    cu_seq_lens_q=cu_seq_lens_q,
+                    cu_seq_lens_k=cu_seq_lens_k,
+                    max_length_q=max_length_q,
+                    max_length_k=max_length_k,
+                    **kwargs,
+                )
+
+                loss += sum(mtp_loss) / self.config.num_nextn_predict_layers * self.config.mtp_loss_weight
+
+                hidden_states = mtp_outputs.last_hidden_state
+
+        if not self.training:
+            self.mtp_idx = 0
+
+            if use_cache:
+                if self.hidden_states[self.mtp_idx] is None:
+                    self.hidden_states[self.mtp_idx] = hidden_states
+
+                else:
+                    self.hidden_states[self.mtp_idx] = torch.cat([self.hidden_states[self.mtp_idx], hidden_states], dim=1)
+
+            else:
+                self.hidden_states[self.mtp_idx] = hidden_states
+
+        # ===============================================================================================
+
+        if not return_dict:
+            output = (logits,) + outputs[1:]
+            return (loss,) + output if loss is not None else output
+
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=logits,
+            past_key_values=outputs.past_key_values,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
     def _prepare_mtp_for_generation(
         self,
         mtp_inference_mode,
