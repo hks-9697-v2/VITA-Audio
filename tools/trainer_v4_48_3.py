@@ -419,7 +419,6 @@ class Trainer(HFTrainer):
         super().__init__(*args, **kwargs)
         if self.args.profile:
             self.add_callback(ProfilerCallback(self.args.profile_skip_first, self.args.profile_wait, self.args.profile_warmup, self.args.profile_active, self.args.profile_repeat, self.args.output_dir))
-        self.cuda_graph = None
 
     def get_train_dataloader(self) -> DataLoader:
         """
@@ -1148,7 +1147,6 @@ class Trainer(HFTrainer):
         Return:
             `torch.Tensor`: The tensor with training loss on this batch.
         """
-
         print_batch(inputs, self.processing_class, self.args)
 
         model.train()
@@ -1156,54 +1154,12 @@ class Trainer(HFTrainer):
             self.optimizer.train()
 
         inputs = self._prepare_inputs(inputs)
+        if is_sagemaker_mp_enabled():
+            loss_mb = smp_forward_backward(model, inputs, self.args.gradient_accumulation_steps)
+            return loss_mb.reduce_mean().detach().to(self.args.device)
 
-        if self.args.use_cuda_graph:
-            if self.cuda_graph is None:
-                self.cuda_graph = torch.cuda.CUDAGraph()
-                static_inputs = {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
-
-                self.accelerator.accumulate = lambda model: None  # Disable accumulation for graph capture
-
-                with torch.cuda.graph(self.cuda_graph):
-                    if is_sagemaker_mp_enabled():
-                        loss_mb = smp_forward_backward(model, static_inputs, self.args.gradient_accumulation_steps)
-                        static_loss = loss_mb.reduce_mean().detach().to(self.args.device)
-                    else:
-                        with self.compute_loss_context_manager():
-                            static_loss = self.compute_loss(model, static_inputs, num_items_in_batch=num_items_in_batch)
-
-                        if self.args.n_gpu > 1:
-                            static_loss = static_loss.mean()
-
-                        if self.use_apex:
-                            with amp.scale_loss(static_loss, self.optimizer) as scaled_loss:
-                                scaled_loss.backward()
-                        else:
-                            if not self.model_accepts_loss_kwargs and self.compute_loss_func is None:
-                                static_loss = static_loss / self.args.gradient_accumulation_steps
-                            
-                            kwargs = {}
-                            if self.accelerator.distributed_type == DistributedType.DEEPSPEED:
-                                kwargs["scale_wrt_gas"] = False
-                            self.accelerator.backward(static_loss, **kwargs)
-                
-                self.accelerator.accumulate = lambda model: self.accelerator.scaler.unscale_(self.optimizer) if self.accelerator.scaler is not None else None
-
-
-            static_inputs = {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
-            for k, v in static_inputs.items():
-                if isinstance(v, torch.Tensor):
-                    inputs[k].copy_(v)
-            
-            self.cuda_graph.replay()
-            loss = static_loss
-        else:
-            if is_sagemaker_mp_enabled():
-                loss_mb = smp_forward_backward(model, inputs, self.args.gradient_accumulation_steps)
-                return loss_mb.reduce_mean().detach().to(self.args.device)
-
-            with self.compute_loss_context_manager():
-                loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+        with self.compute_loss_context_manager():
+            loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
 
         del inputs
         if (
@@ -1227,33 +1183,31 @@ class Trainer(HFTrainer):
             else:
                 torch.cuda.empty_cache()
 
-        if not self.args.use_cuda_graph:
-            kwargs = {}
+        kwargs = {}
 
-            # For LOMO optimizers you need to explicitly use the learnign rate
-            if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
-                kwargs["learning_rate"] = self._get_learning_rate()
+        # For LOMO optimizers you need to explicitly use the learnign rate
+        if self.args.optim in [OptimizerNames.LOMO, OptimizerNames.ADALOMO]:
+            kwargs["learning_rate"] = self._get_learning_rate()
 
-            if self.args.n_gpu > 1:
-                loss = loss.mean()  # mean() to average on multi-gpu parallel training
+        if self.args.n_gpu > 1:
+            loss = loss.mean()  # mean() to average on multi-gpu parallel training
 
-            if self.use_apex:
-                with amp.scale_loss(loss, self.optimizer) as scaled_loss:
-                    scaled_loss.backward()
-            else:
-                # Finally we need to normalize the loss for reporting
-                if not self.model_accepts_loss_kwargs and self.compute_loss_func is None:
-                    loss = loss / self.args.gradient_accumulation_steps
+        if self.use_apex:
+            with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            # Finally we need to normalize the loss for reporting
+            if not self.model_accepts_loss_kwargs and self.compute_loss_func is None:
+                loss = loss / self.args.gradient_accumulation_steps
 
-                # Turning off loss scaling w.r.t. gradient accumulation when DeepSpeed is enabled
-                # https://github.com/huggingface/transformers/pull/35808
-                if self.accelerator.distributed_type == DistributedType.DEEPSPEED:
-                    kwargs["scale_wrt_gas"] = False
+            # Turning off loss scaling w.r.t. gradient accumulation when DeepSpeed is enabled
+            # https://github.com/huggingface/transformers/pull/35808
+            if self.accelerator.distributed_type == DistributedType.DEEPSPEED:
+                kwargs["scale_wrt_gas"] = False
 
-                self.accelerator.backward(loss, **kwargs)
+            self.accelerator.backward(loss, **kwargs)
 
-        return loss.detach()
-
+            return loss.detach()
 
 
     def get_batch_samples(self, epoch_iterator, num_batches):

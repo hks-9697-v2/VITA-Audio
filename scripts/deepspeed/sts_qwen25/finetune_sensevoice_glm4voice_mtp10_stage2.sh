@@ -125,7 +125,6 @@ torchrun $DISTRIBUTED_ARGS tools/finetune_sts_v4_48_3.py \
     --mtp_model_lr_mult 1.00e1 \
     --audio-model-freeze \
     --text-audio-interval-ratio 1 10 4 10 \
-    --use_cuda_graph \
 
     #--profile \
     #--profile_skip_first 0 \
