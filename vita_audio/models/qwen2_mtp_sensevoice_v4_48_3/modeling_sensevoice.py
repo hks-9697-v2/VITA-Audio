@@ -1060,52 +1060,15 @@ class AudioEncoder(nn.Module):
 
     def forward(
         self,
-        audios,
+        speech,
+        speech_lengths,
     ):
-
-        from torch.nn.utils.rnn import pad_sequence
-        feats_pad = pad_sequence(audios, batch_first=True, padding_value=0.0)
-        feats_lens = torch.as_tensor([len(x) for x in audios])
-
-        device = self.kwargs["device"]
-        feats_pad = feats_pad.to(device=device, dtype=torch.bfloat16)
-        feats_lens = feats_lens.to(device=device)
-
-        # Prepare query tensors on the correct device
-        language = self.kwargs.get("language", "auto")
-        language_query = self.model.embed(
-            torch.LongTensor(
-                [[self.model.lid_dict[language] if language in self.model.lid_dict else 0]]
-            ).to(device)
-        ).repeat(feats_pad.size(0), 1, 1)
-
-        use_itn = self.kwargs.get("use_itn", False)
-        textnorm = self.kwargs.get("text_norm", None)
-        if textnorm is None:
-            textnorm = "withitn" if use_itn else "woitn"
-        textnorm_query = self.model.embed(
-            torch.LongTensor([[self.model.textnorm_dict[textnorm]]]).to(device)
-        ).repeat(feats_pad.size(0), 1, 1)
-
-        event_emo_query = self.model.embed(torch.LongTensor([[1, 2]]).to(device)).repeat(
-            feats_pad.size(0), 1, 1
-        )
-
-        # Concatenate queries and features
-        speech = torch.cat((textnorm_query, feats_pad), dim=1)
-        feats_lens += 1
-        input_query = torch.cat((language_query, event_emo_query), dim=1)
-        speech = torch.cat((input_query, speech), dim=1)
-        feats_lens += 3
-
         encoder_out, encoder_out_lens = self.model.inference_encode(
             speech,
-            data_lengths=feats_lens,
+            data_lengths=speech_lengths,
             **self.kwargs,
         )
-
         return encoder_out, encoder_out_lens
-
 
 
     # https://github.com/modelscope/FunASR/blob/main/funasr/auto/auto_model.py
