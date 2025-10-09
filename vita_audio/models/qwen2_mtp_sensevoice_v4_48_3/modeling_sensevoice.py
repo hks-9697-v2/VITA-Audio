@@ -1061,7 +1061,6 @@ class AudioEncoder(nn.Module):
     def forward(
         self,
         audios,
-        audios_lengths,
     ):
 
         from torch.nn.utils.rnn import pad_sequence
