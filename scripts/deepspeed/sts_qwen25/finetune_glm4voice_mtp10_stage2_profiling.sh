@@ -164,7 +164,7 @@ else
 fi
 
 # Copy the DeepSpeed monitor logs directory
-DS_LOGS_DIR="${LOCAL_CODE_PATH}/ds_logs"
+DS_LOGS_DIR="${OUTPUT_DIR}/ds_logs"
 if [ -d "${DS_LOGS_DIR}" ]; then
     cp -r "${DS_LOGS_DIR}" "${GCS_DEST}"
 else

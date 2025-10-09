@@ -565,85 +565,32 @@ class Qwen2Model(Qwen2PreTrainedModel):
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         if (past_key_values is None or len(past_key_values) == 0) and audios is not None:
-            # ===== BEGIN MOVED LOGIC =====
-            from torch.nn.utils.rnn import pad_sequence
-            device = self.embed_tokens.weight.device
-            dtype = self.embed_tokens.weight.dtype
-
-            feats_pad = pad_sequence(audios, batch_first=True, padding_value=0.0)
-            feats_lens = torch.as_tensor([len(x) for x in audios], device=device)
-            feats_pad = feats_pad.to(device=device, dtype=torch.bfloat16)
-
-            language = self.audio_model.kwargs.get("language", "auto")
-            language_query = self.audio_model.model.embed(
-                torch.LongTensor(
-                    [[self.audio_model.model.lid_dict[language] if language in self.audio_model.model.lid_dict else 0]]
-                ).to(device)
-            ).repeat(feats_pad.size(0), 1, 1)
-
-            use_itn = self.audio_model.kwargs.get("use_itn", False)
-            textnorm = self.audio_model.kwargs.get("text_norm", None)
-            if textnorm is None:
-                textnorm = "withitn" if use_itn else "woitn"
-            textnorm_query = self.audio_model.model.embed(
-                torch.LongTensor([[self.audio_model.model.textnorm_dict[textnorm]]]).to(device)
-            ).repeat(feats_pad.size(0), 1, 1)
-
-            event_emo_query = self.audio_model.model.embed(torch.LongTensor([[1, 2]]).to(device)).repeat(
-                feats_pad.size(0), 1, 1
-            )
-
-            speech = torch.cat((textnorm_query, feats_pad), dim=1)
-            speech_lengths = feats_lens + 1
-            input_query = torch.cat((language_query, event_emo_query), dim=1)
-            speech = torch.cat((input_query, speech), dim=1)
-            speech_lengths += 3
-            # ===== END MOVED LOGIC =====
-
-            audio_embeds, audio_lengths = self.audio_model(speech, speech_lengths)
+            audio_embeds, audio_lengths = self.audio_model(audios)
+            # if torch.distributed.get_rank() == 0:
+            #     print(f"audio_embeds {audio_embeds.size()}")
             assert audio_embeds.shape[0] == len(audios)
             fake_audios = None
+
             audio_embeds = self.audio_projection(audio_embeds)
 
+            # torch.set_printoptions(threshold=100_000)
+            # if torch.distributed.get_rank() == 0:
+            #     print(f"audio_embeds {audio_embeds.size()}")
+            #     print(f"audio_embeds {audio_embeds.sum()}")
+            #     print(f"audios {[x.size() for x in audios]}")
+            #     print(f"audios {[x.sum() for x in audios]}")
+            #     print(f"input_ids {input_ids.size()}")
+            #     print(f"input_ids {input_ids.sum()}")
+            #     # print(f"input_ids {input_ids}")
+            #     print(f"audio_indices {[x.size() for x in audio_indices]}")
+            #     print(f"audio_indices {[x.sum() for x in audio_indices]}")
+            #     # print(f"audio_indices {audio_indices}")
+
         elif self.training:
-            # ===== BEGIN MOVED LOGIC (for fake_audios) =====
-            from torch.nn.utils.rnn import pad_sequence
-            device = self.embed_tokens.weight.device
-            dtype = self.embed_tokens.weight.dtype
-            fake_audios_list = [torch.ones((1, 560), dtype=dtype, device=device)]
-
-            feats_pad = pad_sequence(fake_audios_list, batch_first=True, padding_value=0.0)
-            feats_lens = torch.as_tensor([len(x) for x in fake_audios_list], device=device)
-            feats_pad = feats_pad.to(device=device, dtype=torch.bfloat16)
-
-            language = self.audio_model.kwargs.get("language", "auto")
-            language_query = self.audio_model.model.embed(
-                torch.LongTensor(
-                    [[self.audio_model.model.lid_dict[language] if language in self.audio_model.model.lid_dict else 0]]
-                ).to(device)
-            ).repeat(feats_pad.size(0), 1, 1)
-
-            use_itn = self.audio_model.kwargs.get("use_itn", False)
-            textnorm = self.audio_model.model.kwargs.get("text_norm", None)
-            if textnorm is None:
-                textnorm = "withitn" if use_itn else "woitn"
-            textnorm_query = self.audio_model.model.embed(
-                torch.LongTensor([[self.audio_model.model.textnorm_dict[textnorm]]]).to(device)
-            ).repeat(feats_pad.size(0), 1, 1)
-
-            event_emo_query = self.audio_model.model.embed(torch.LongTensor([[1, 2]]).to(device)).repeat(
-                feats_pad.size(0), 1, 1
-            )
-
-            speech = torch.cat((textnorm_query, feats_pad), dim=1)
-            speech_lengths = feats_lens + 1
-            input_query = torch.cat((language_query, event_emo_query), dim=1)
-            speech = torch.cat((input_query, speech), dim=1)
-            speech_lengths += 3
-            fake_audios = None # Not needed after this
-            # ===== END MOVED LOGIC =====
-
-            audio_embeds, audio_lengths = self.audio_model(speech, speech_lengths)
+            device = self.get_input_embeddings().weight.data.device
+            dtype = self.get_input_embeddings().weight.data.dtype
+            fake_audios = torch.ones((1, 1, 560), dtype=dtype, device=device)
+            audio_embeds, audio_lengths = self.audio_model(fake_audios)
             audio_embeds = self.audio_projection(audio_embeds)
 
         else:
