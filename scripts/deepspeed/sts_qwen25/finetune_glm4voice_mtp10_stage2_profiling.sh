@@ -82,6 +82,8 @@ DISTRIBUTED_ARGS="
     --master_port $MASTER_PORT
 "
 
+export TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS=1
+
 torchrun $DISTRIBUTED_ARGS tools/finetune_sts_v4_48_3.py \
     --log_level "info" \
     --do_train \

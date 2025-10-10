@@ -1636,6 +1636,6 @@ def prepare_fa2_from_position_ids_for_mtp(position_ids, mtp_idx):
         )
     )
 
-    max_length = position_ids.max() + 1 - 1 - mtp_idx
+    max_length = position_ids.max().item() + 1 - 1 - mtp_idx
 
     return cu_seq_lens, cu_seq_lens, max_length, max_length
