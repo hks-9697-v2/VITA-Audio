@@ -102,7 +102,7 @@ torchrun $DISTRIBUTED_ARGS tools/finetune_sts_v4_48_3.py \
     --max_steps 100 \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 1 \
-    --gradient_accumulation_steps 1 \
+    --gradient_accumulation_steps 16 \
     --save_strategy "no" \
     --learning_rate 5.00e-5 \
     --max_grad_norm 1.0 \
@@ -136,6 +136,9 @@ torchrun $DISTRIBUTED_ARGS tools/finetune_sts_v4_48_3.py \
     --profile_warmup 3 \
     --profile_active 1 \
     --profile_repeat 1 \
+    #--torch-compile \
+    #--torch-compile-backend cudagraphs \
+    #--torch-compile-mode max-autotune \
 
 
     #--language-model-freeze \
