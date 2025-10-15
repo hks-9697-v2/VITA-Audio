@@ -32,6 +32,8 @@ class Qwen2Dataset(BaseDataset):
             **kwargs,
         )
 
+        self.processor["audio"].load_model()
+
         self.default_system_message = "You are a helpful AI assistant."
         self.default_system_message = None
 
@@ -268,7 +270,6 @@ class Qwen2Dataset(BaseDataset):
 
     def __getitem__(self, index):
 
-        self.processor["audio"].load_model()
 
         while True:
             # if True:

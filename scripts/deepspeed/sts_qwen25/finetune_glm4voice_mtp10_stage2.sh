@@ -91,7 +91,7 @@ torchrun $DISTRIBUTED_ARGS tools/finetune_sts_v4_48_3.py \
     --torch_dtype bfloat16 \
     --output_dir $OUTPUT_DIR \
     --num_train_epochs 1 \
-    --max_steps 4000 \
+    --max_steps 10 \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps 16 \
