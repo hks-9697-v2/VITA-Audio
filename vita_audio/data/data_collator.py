@@ -105,6 +105,10 @@ def collate_fn_deepspeed_old(batch):
 
 
 def collate_fn_deepspeed(batch):
+    # Filter out empty dicts
+    batch = [item for item in batch if item]
+    if not batch:
+        return None # Or raise an error, or return an empty tensor dict
 
     keys = list(set().union(*[set(x.keys()) for x in batch]))
     # print(f"{keys=}")

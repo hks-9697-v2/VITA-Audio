@@ -1217,6 +1217,9 @@ class Trainer(HFTrainer):
             try:
                 while True:
                     batch_sample = next(epoch_iterator)
+                    if batch_sample is None:
+                        #logger.warning("Skipping None batch from iterator")
+                        continue
                     if "input_ids" in batch_sample:
                         break
                 batch_samples += [batch_sample]
