@@ -100,7 +100,7 @@ torchrun $DISTRIBUTED_ARGS tools/finetune_sts_v4_48_3.py \
     --output_dir $OUTPUT_DIR \
     --num_train_epochs 1 \
     --max_steps 10 \
-    --per_device_train_batch_size 1 \
+    --per_device_train_batch_size 2 \
     --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps 16 \
     --save_strategy "no" \
@@ -130,13 +130,13 @@ torchrun $DISTRIBUTED_ARGS tools/finetune_sts_v4_48_3.py \
     --dataloader_num_workers 1 \
     --mtp_model_lr_mult 1.00e1 \
     --text-audio-interval-ratio 1 10 4 10 \
+    --torch-compile \
     # --profile \
     # --profile_skip_first 0 \
     # --profile_wait 1 \
     # --profile_warmup 3 \
     # --profile_active 1 \
     # --profile_repeat 1 \
-    #--torch-compile \
     #--torch-compile-backend cudagraphs \
     #--torch-compile-mode max-autotune \
 
